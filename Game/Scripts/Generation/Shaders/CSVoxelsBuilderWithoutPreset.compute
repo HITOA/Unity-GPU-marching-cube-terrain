@@ -1,0 +1,77 @@
+#pragma kernel CSVoxelGenerator
+#pragma kernel CSEditSpherical
+
+#include "VoxelGenerationUtils.hlsl"
+#include "VoxelStruct.hlsl"
+#include "NoiseLayerPreset.hlsl"
+
+RWStructuredBuffer<Voxel> _Result;
+float3 _Dim;
+float3 _Offset;
+float _Scale;
+float _Seed;
+
+//Preset Generation
+float2 _TerrainHeight;
+RWStructuredBuffer<NoiseLayerPreset> _Layers;
+int _LayersCount;
+
+Voxel MakeVoxel(float weight) {
+    Voxel voxel = (Voxel)0;
+
+    voxel.weight = weight;
+
+    return voxel;
+}
+
+uint GetIdxFromId(uint3 id) {
+    return id.x + id.y * _Dim.x + id.z * _Dim.x * _Dim.y;
+}
+
+float3 GetPosFromId(uint3 id) {
+    return float3(id.x * _Scale + _Offset.x, id.y * _Scale + _Offset.y, id.z * _Scale + _Offset.z);
+}
+
+[numthreads(4, 4, 4)]
+void CSVoxelGenerator (uint3 id : SV_DispatchThreadID)
+{
+    if (id.x >= _Dim.x ||
+        id.y >= _Dim.y ||
+        id.z >= _Dim.z)
+        return;
+
+    uint idx = GetIdxFromId(id);
+    float3 pos = GetPosFromId(id);
+
+    float mountainNoise = pow(SampleFBMSimplex2D(pos, 0.0005, 8, _Seed), 2);
+    float warpVerticalNoiseValue = pow(SampleFBMSimplex2D(pos, 0.00025, 8, _Seed), 4) * (SampleFBMSimplex2D(pos, 0.001, 8, _Seed) * 4000 * mountainNoise);
+    float warpNoiseValue = SampleFBMSimplex3D(pos, 0.001, 8, _Seed + 3498) * 1500 * mountainNoise;
+    float landscapeValue = SampleFBMSimplex2D(pos, 0.0001, 8, _Seed + 9384) * 300;
+
+    float weight = SampleVerticalGradient3D(_TerrainHeight.x, _TerrainHeight.y, pos - abs(warpNoiseValue + warpVerticalNoiseValue) + landscapeValue);
+
+    _Result[idx] = MakeVoxel(weight);
+}
+
+float3 _Center;
+float _Radius;
+float _Power;
+
+[numthreads(4, 4, 4)]
+void CSEditSpherical(uint3 id : SV_DispatchThreadID)
+{
+    if (id.x >= _Dim.x ||
+        id.y >= _Dim.y ||
+        id.z >= _Dim.z)
+        return;
+
+    uint idx = GetIdxFromId(id);
+    float3 pos = GetPosFromId(id);
+
+    float dst = abs(distance(_Center, pos));
+
+    if (dst < _Radius) {
+        float brushWeight = smoothstep(_Radius, _Radius * 0.7, dst);
+        _Result[idx].weight = clamp(_Result[idx].weight + (_Power * brushWeight), 0, 1);
+    }
+}

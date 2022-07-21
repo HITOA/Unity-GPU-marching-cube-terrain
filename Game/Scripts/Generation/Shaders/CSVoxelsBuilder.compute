@@ -1,0 +1,111 @@
+#pragma kernel CSVoxelGenerator
+
+#include "VoxelGenerationUtils.hlsl"
+#include "VoxelStruct.hlsl"
+#include "NoiseLayerPreset.hlsl"
+
+RWStructuredBuffer<Voxel> _Result;
+float3 _Dim;
+float3 _Offset;
+float _Scale;
+float _Seed;
+
+//Preset Generation
+float2 _TerrainHeight;
+RWStructuredBuffer<NoiseLayerPreset> _Layers;
+int _LayersCount;
+
+Voxel MakeVoxel(float weight) {
+    Voxel voxel = (Voxel)0;
+
+    voxel.weight = weight;
+
+    return voxel;
+}
+
+uint GetIdxFromId(uint3 id) {
+    return id.x + id.y * _Dim.x + id.z * _Dim.x * _Dim.y;
+}
+
+float3 GetPosFromId(uint3 id) {
+    return float3(id.x * _Scale + _Offset.x, id.y * _Scale + _Offset.y, id.z * _Scale + _Offset.z);
+}
+
+[numthreads(4, 4, 4)]
+void CSVoxelGenerator (uint3 id : SV_DispatchThreadID)
+{
+    if (id.x >= _Dim.x ||
+        id.y >= _Dim.y ||
+        id.z >= _Dim.z)
+        return;
+
+    uint idx = GetIdxFromId(id);
+    float3 pos = GetPosFromId(id);
+
+    float3 warpNoiseValue = 0;
+    float3 lastNoiseValue = 0;
+    float seedOffset = 1;
+
+    for (int i = 0; i < _LayersCount; i++) {
+
+        float3 currentValue = 0;
+
+        float frequency = _Layers[i].frequency;
+        float octaves = _Layers[i].octaves;
+        float offset = _Layers[i].offset;
+        float3 power = _Layers[i].power;
+        float powvalue = _Layers[i].powvalue;
+
+        switch (_Layers[i].type) {
+        case 0:
+            currentValue = pow((SampleFBMSimplex2D(pos, frequency, octaves, _Seed + seedOffset) + offset), powvalue) * power; //FBMSimplex2D
+            break;
+        case 1:
+            currentValue = pow((SampleFBMSimplex3D(pos, frequency, octaves, _Seed + seedOffset) + offset), powvalue) * power; //FBMSimplex3D
+            break;
+        case 2:
+            currentValue = power;
+            break;
+        default:
+            currentValue = 1;
+            break;
+        }
+
+        switch (_Layers[i].mixMode) {
+        case 0:
+            warpNoiseValue += currentValue; //Add
+            break;
+        case 1:
+            warpNoiseValue *= currentValue; //Multiply
+            break;
+        case 2:
+            lastNoiseValue += currentValue; //AddForward
+            break;
+        case 3:
+            lastNoiseValue *= currentValue; //MultiplyForward
+            break;
+        case 4:
+            lastNoiseValue += currentValue;
+            warpNoiseValue += lastNoiseValue; //AddBoth
+            lastNoiseValue = 0;
+            break;
+        case 5:
+            lastNoiseValue *= currentValue;
+            warpNoiseValue *= lastNoiseValue; //MultiplyBoth
+            lastNoiseValue = 0;
+            break;
+        case 6:
+            lastNoiseValue = 0;
+            break;
+        default:
+            warpNoiseValue *= currentValue;
+            break;
+        }
+
+        seedOffset += i * 1000;
+    }
+
+    float weight = SampleVerticalGradient3D(_TerrainHeight.x, _TerrainHeight.y, pos + warpNoiseValue);
+
+    _Result[idx] = MakeVoxel(weight);
+}

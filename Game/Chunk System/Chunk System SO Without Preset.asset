@@ -1,0 +1,51 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 9b1d60eff9ac54545a2b554174a8d7ed, type: 3}
+  m_Name: Chunk System SO Without Preset
+  m_EditorClassIdentifier: 
+  <seed>k__BackingField: 43584750
+  <csVoxelBuilder>k__BackingField: {fileID: 7200000, guid: 7dc1b02b325055b4f9d3e9753d44dd9d, type: 3}
+  <csMeshBuilder>k__BackingField: {fileID: 7200000, guid: 21b1b5089bc3f504c81918d96b5180a6, type: 3}
+  <groundMat>k__BackingField: {fileID: 2100000, guid: 0f6cc999eb99372488ad6fad2312c848, type: 2}
+  <grassMat>k__BackingField: {fileID: 2100000, guid: 754120b849eda714f805174c3b0b6b6c, type: 2}
+  <isolevel>k__BackingField: 0.5
+  <chunkSize>k__BackingField: {x: 32, y: 32, z: 32}
+  <chunkMaxResolution>k__BackingField: 0.5
+  <lodCurve>k__BackingField:
+    serializedVersion: 2
+    m_Curve:
+    - serializedVersion: 3
+      time: 0
+      value: 0
+      inSlope: 0
+      outSlope: 0
+      tangentMode: 0
+      weightedMode: 0
+      inWeight: 0
+      outWeight: 0
+    - serializedVersion: 3
+      time: 1
+      value: 1
+      inSlope: 2
+      outSlope: 2
+      tangentMode: 0
+      weightedMode: 0
+      inWeight: 0
+      outWeight: 0
+    m_PreInfinity: 2
+    m_PostInfinity: 2
+    m_RotationOrder: 4
+  <chunkLodRatio>k__BackingField: 24
+  <chunkLodMinCPU>k__BackingField: 1
+  <chunkLodMaxCPU>k__BackingField: 64
+  <chunkSizeRatio>k__BackingField: 2
+  <preset>k__BackingField: {fileID: 11400000, guid: eee2847e75ba44e41aece26b3cffea7e, type: 2}

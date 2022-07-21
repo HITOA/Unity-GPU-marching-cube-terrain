@@ -1,0 +1,343 @@
+#pragma kernel CSMeshBuilder
+#pragma kernel CSMeshBuilderDual
+#pragma kernel CSTriEstimator
+#pragma kernel CSTriEstimatorDual
+
+#define SIZEOF_UINT 4
+#define SIZEOF_FLOAT3 12
+
+#include "VoxelStruct.hlsl"
+#include "MarchingTable.hlsl"
+
+StructuredBuffer<Voxel> _VoxelData;
+float3 _Dim;
+float _Scale;
+
+float _IsoLevel;
+
+RWByteAddressBuffer _VertexBuffer;
+RWByteAddressBuffer _IndexBuffer;
+
+RWByteAddressBuffer _SecondVertexBuffer;
+RWByteAddressBuffer _SecondIndexBuffer;
+
+RWStructuredBuffer<uint> _Counter;
+RWStructuredBuffer<uint> _SecondCounter;
+
+inline void WriteVertex(uint offset, float3 p, float3 n) {
+    uint addr = offset * SIZEOF_FLOAT3 * 2;
+    _VertexBuffer.Store3(addr, asuint(p));
+    _VertexBuffer.Store3(addr + SIZEOF_FLOAT3, asuint(n));
+}
+
+inline void WriteIndices(uint offset, uint3 indicies) {
+    _IndexBuffer.Store3(offset * SIZEOF_UINT, indicies);
+}
+
+inline void WriteSecondVertex(uint offset, float3 p) {
+    uint addr = offset * SIZEOF_FLOAT3;
+    _SecondVertexBuffer.Store3(addr, asuint(p));
+}
+
+inline void WriteSecondIndices(uint offset, uint3 indicies) {
+    _SecondIndexBuffer.Store3(offset * SIZEOF_UINT, indicies);
+}
+
+inline uint GetIdxFromId(uint3 id) {
+    return id.x + id.y * _Dim.x + id.z * _Dim.x * _Dim.y;
+}
+
+inline Voxel GetVoxel(uint3 id) {
+    return _VoxelData[GetIdxFromId(id)];
+}
+
+inline uint GetCubeIndex(Voxel v[8], float isoLevel) {
+    uint cubeIndex = 0;
+
+    for (int i = 0; i < 8; i++) {
+        cubeIndex |= (v[i].weight > isoLevel) << i;
+    }
+
+    return cubeIndex;
+}
+
+inline float3 TransformPoint(float3 p, float scale) {
+    return p * scale;
+}
+
+float4 VoxelValueWithGradient(uint3 i)
+{
+    uint3 i_n = max(i, 1) - 1;
+    uint3 i_p = min(i + 1, _Dim.xyz - 1);
+    float v = GetVoxel(uint3(i.x, i.y, i.z)).weight;
+    float v_nx = GetVoxel(uint3(i_n.x, i.y, i.z)).weight;
+    float v_px = GetVoxel(uint3(i_p.x, i.y, i.z)).weight;
+    float v_ny = GetVoxel(uint3(i.x, i_n.y, i.z)).weight;
+    float v_py = GetVoxel(uint3(i.x, i_p.y, i.z)).weight;
+    float v_nz = GetVoxel(uint3(i.x, i.y, i_n.z)).weight;
+    float v_pz = GetVoxel(uint3(i.x, i.y, i_p.z)).weight;
+    return float4(v_px - v_nx, v_py - v_ny, v_pz - v_nz, v);
+}
+
+uint2 EdgeVertexPair(uint index) {
+    uint v1 = index & 7;
+    uint v2 = index < 8 ? ((index + 1) & 3) | (index & 4) : v1 + 4;
+    return uint2(v1, v2);
+}
+
+void BuildMeshFirst(uint3 id) {
+    if (id.x >= _Dim.x - 1 ||
+        id.y >= _Dim.y - 1 ||
+        id.z >= _Dim.z - 1)
+        return;
+
+    uint3 p[8] = {
+        uint3(id.x, id.y, id.z),
+        uint3(id.x + 1, id.y, id.z),
+        uint3(id.x + 1, id.y, id.z + 1),
+        uint3(id.x, id.y, id.z + 1),
+        uint3(id.x, id.y + 1, id.z),
+        uint3(id.x + 1, id.y + 1, id.z),
+        uint3(id.x + 1, id.y + 1, id.z + 1),
+        uint3(id.x, id.y + 1, id.z + 1) };
+
+    Voxel v[8] = {
+        GetVoxel(p[0]),
+        GetVoxel(p[1]),
+        GetVoxel(p[2]),
+        GetVoxel(p[3]),
+        GetVoxel(p[4]),
+        GetVoxel(p[5]),
+        GetVoxel(p[6]),
+        GetVoxel(p[7]) };
+
+    uint cubeIndex = GetCubeIndex(v, _IsoLevel);
+
+    if (edgeTable[cubeIndex] == 0x00 ||
+        edgeTable[cubeIndex] == 0xFF)
+        return;
+
+    float4 vValue[8];
+
+    for (int i = 0; i < 8; i++) {
+        vValue[i] = VoxelValueWithGradient(p[i]);
+    }
+
+    float3 verticies[12];
+    float3 normales[12];
+
+    for (i = 0; i < 12; i++) {
+        uint2 vPair = EdgeVertexPair(i);
+
+        float4 v0 = vValue[vPair.x];
+        float4 v1 = vValue[vPair.y];
+
+        float3 p0 = p[vPair.x];
+        float3 p1 = p[vPair.y];
+
+        float mu = clamp((_IsoLevel - v0.w) / (v1.w - v0.w), 0, 1);
+
+        verticies[i] = TransformPoint(lerp(p0, p1, mu), _Scale);
+        normales[i] = -normalize(lerp(v0.xyz, v1.xyz, mu));
+    }
+
+    for (int i = 0; triTable[cubeIndex][i] != -1; i += 3) {
+        uint i0 = triTable[cubeIndex][i];
+        uint i1 = triTable[cubeIndex][i + 1];
+        uint i2 = triTable[cubeIndex][i + 2];
+
+        uint count = _Counter.IncrementCounter();
+        uint vidx = count * 3;
+
+        WriteVertex(vidx, verticies[i0], normales[i0]);
+        WriteVertex(vidx + 1, verticies[i1], normales[i1]);
+        WriteVertex(vidx + 2, verticies[i2], normales[i2]);
+
+        WriteIndices(vidx, uint3(vidx, vidx + 1, vidx + 2));
+    }
+}
+
+void BuildMeshSecond(uint3 id) {
+    uint skip = 4;
+
+    if (id.x >= _Dim.x - skip ||
+        id.y >= _Dim.y - skip ||
+        id.z >= _Dim.z - skip)
+        return;
+
+    if (id.x % skip != 0 ||
+        id.y % skip != 0 ||
+        id.z % skip)
+        return;
+
+    uint3 p[8] = {
+        uint3(id.x, id.y, id.z),
+        uint3(id.x + skip, id.y, id.z),
+        uint3(id.x + skip, id.y, id.z + skip),
+        uint3(id.x, id.y, id.z + skip),
+        uint3(id.x, id.y + skip, id.z),
+        uint3(id.x + skip, id.y + skip, id.z),
+        uint3(id.x + skip, id.y + skip, id.z + skip),
+        uint3(id.x, id.y + skip, id.z + skip) };
+
+    Voxel v[8] = {
+        GetVoxel(p[0]),
+        GetVoxel(p[1]),
+        GetVoxel(p[2]),
+        GetVoxel(p[3]),
+        GetVoxel(p[4]),
+        GetVoxel(p[5]),
+        GetVoxel(p[6]),
+        GetVoxel(p[7]) };
+
+    uint cubeIndex = GetCubeIndex(v, _IsoLevel);
+
+    if (edgeTable[cubeIndex] == 0x00 ||
+        edgeTable[cubeIndex] == 0xFF)
+        return;
+
+    float4 vValue[8];
+
+    for (int i = 0; i < 8; i++) {
+        vValue[i] = VoxelValueWithGradient(p[i]);
+    }
+
+    float3 verticies[12];
+    float3 normales[12];
+
+    for (i = 0; i < 12; i++) {
+        uint2 vPair = EdgeVertexPair(i);
+
+        float4 v0 = vValue[vPair.x];
+        float4 v1 = vValue[vPair.y];
+
+        float3 p0 = p[vPair.x];
+        float3 p1 = p[vPair.y];
+
+        float mu = clamp((_IsoLevel - v0.w) / (v1.w - v0.w), 0, 1);
+
+        verticies[i] = TransformPoint(lerp(p0, p1, mu), _Scale);
+        normales[i] = -normalize(lerp(v0.xyz, v1.xyz, mu));
+    }
+
+    for (int i = 0; triTable[cubeIndex][i] != -1; i += 3) {
+        uint i0 = triTable[cubeIndex][i];
+        uint i1 = triTable[cubeIndex][i + 1];
+        uint i2 = triTable[cubeIndex][i + 2];
+
+        uint count = _SecondCounter.IncrementCounter();
+        uint vidx = count * 3;
+
+        WriteSecondVertex(vidx, verticies[i0]);
+        WriteSecondVertex(vidx + 1, verticies[i1]);
+        WriteSecondVertex(vidx + 2, verticies[i2]);
+
+        WriteSecondIndices(vidx, uint3(vidx, vidx + 1, vidx + 2));
+    }
+}
+
+
+void EstimateTriFirst(uint3 id) {
+    if (id.x >= _Dim.x - 1 ||
+        id.y >= _Dim.y - 1 ||
+        id.z >= _Dim.z - 1)
+        return;
+
+    uint3 p[8] = {
+        uint3(id.x, id.y, id.z),
+        uint3(id.x + 1, id.y, id.z),
+        uint3(id.x + 1, id.y, id.z + 1),
+        uint3(id.x, id.y, id.z + 1),
+        uint3(id.x, id.y + 1, id.z),
+        uint3(id.x + 1, id.y + 1, id.z),
+        uint3(id.x + 1, id.y + 1, id.z + 1),
+        uint3(id.x, id.y + 1, id.z + 1) };
+
+    Voxel v[8] = {
+        GetVoxel(p[0]),
+        GetVoxel(p[1]),
+        GetVoxel(p[2]),
+        GetVoxel(p[3]),
+        GetVoxel(p[4]),
+        GetVoxel(p[5]),
+        GetVoxel(p[6]),
+        GetVoxel(p[7]) };
+
+    uint cubeIndex = GetCubeIndex(v, _IsoLevel);
+
+    if (edgeTable[cubeIndex] == 0x00 ||
+        edgeTable[cubeIndex] == 0xFF)
+        return;
+
+    for (int i = 0; triTable[cubeIndex][i] != -1; i += 3) {
+        _Counter.IncrementCounter();
+    }
+}
+
+void EstimateTriSecond(uint3 id) {
+    uint skip = 4;
+
+    if (id.x >= _Dim.x - skip ||
+        id.y >= _Dim.y - skip ||
+        id.z >= _Dim.z - skip)
+        return;
+
+    if (id.x % skip != 0 ||
+        id.y % skip != 0 ||
+        id.z % skip)
+        return;
+
+    uint3 p[8] = {
+        uint3(id.x, id.y, id.z),
+        uint3(id.x + skip, id.y, id.z),
+        uint3(id.x + skip, id.y, id.z + skip),
+        uint3(id.x, id.y, id.z + skip),
+        uint3(id.x, id.y + skip, id.z),
+        uint3(id.x + skip, id.y + skip, id.z),
+        uint3(id.x + skip, id.y + skip, id.z + skip),
+        uint3(id.x, id.y + skip, id.z + skip) };
+
+    Voxel v[8] = {
+        GetVoxel(p[0]),
+        GetVoxel(p[1]),
+        GetVoxel(p[2]),
+        GetVoxel(p[3]),
+        GetVoxel(p[4]),
+        GetVoxel(p[5]),
+        GetVoxel(p[6]),
+        GetVoxel(p[7]) };
+
+    uint cubeIndex = GetCubeIndex(v, _IsoLevel);
+
+    if (edgeTable[cubeIndex] == 0x00 ||
+        edgeTable[cubeIndex] == 0xFF)
+        return;
+
+    for (int i = 0; triTable[cubeIndex][i] != -1; i += 3) {
+        _SecondCounter.IncrementCounter();
+    }
+}
+
+[numthreads(4, 4, 4)]
+void CSMeshBuilder(uint3 id : SV_DispatchThreadID) {
+    BuildMeshFirst(id);
+}
+
+[numthreads(4, 4, 4)]
+void CSMeshBuilderDual(uint3 id : SV_DispatchThreadID) {
+    BuildMeshFirst(id);
+    BuildMeshSecond(id);
+}
+
+[numthreads(4, 4, 4)]
+void CSTriEstimator(uint3 id : SV_DispatchThreadID)
+{
+    EstimateTriFirst(id);
+}
+
+[numthreads(4, 4, 4)]
+void CSTriEstimatorDual(uint3 id : SV_DispatchThreadID)
+{
+    EstimateTriFirst(id);
+    EstimateTriSecond(id);
+}
